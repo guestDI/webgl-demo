@@ -1,11 +1,22 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { mat4 } from 'gl-matrix';
+import { faceColors1, faceColors2 } from './colors';
 
 const WebGLCube = () => {
     const canvasRef = useRef(null);
-    const [rotation, setRotation] = useState({ x: 0, y: 0 });
+    const [cubeRotations, setCubeRotations] = useState([
+        { x: 0, y: 0 }, // First cube
+        { x: 0, y: 0 }  // Second cube
+    ]);
+    const [rotationSpeeds, setRotationSpeeds] = useState([
+        { x: 0, y: 0 }, // First cube
+        { x: 0, y: 0 }  // Second cube
+    ]);
     const [isDragging, setIsDragging] = useState(false);
     const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
+    const [activeCube, setActiveCube] = useState(null); // Track which cube is being interacted with
+    const lastInteractionTime = useRef([Date.now(), Date.now()]);
+    const [isLightOn, setIsLightOn] = useState(false);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -18,26 +29,58 @@ const WebGLCube = () => {
 
         // Define vertex shader
         const vertexShaderSource = `
+            precision highp float;
             attribute vec4 aVertexPosition;
             attribute vec4 aVertexColor;
             
             uniform mat4 uModelViewMatrix;
             uniform mat4 uProjectionMatrix;
+            uniform float uLightOn;
+            uniform vec3 uLightPosition;
             
             varying lowp vec4 vColor;
+            varying float vLightIntensity;
             
             void main() {
                 gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
                 vColor = aVertexColor;
+                
+                vec3 vertexPosition = (uModelViewMatrix * aVertexPosition).xyz;
+                vec3 lightDirection = normalize(uLightPosition - vertexPosition);
+                vec3 normal = normalize(vertexPosition);
+                
+                // Enhanced directional lighting with maximum brightness
+                float diffuse = max(dot(normal, lightDirection), 0.0);
+                vec3 reflectDir = reflect(-lightDirection, normal);
+                float specular = pow(max(dot(normalize(-vertexPosition), reflectDir), 0.0), 32.0);
+                
+                // Check if this is the second cube (x position > 0)
+                float isSecondCube = step(0.0, vertexPosition.x);
+                
+                // Base lighting with maximum brightness
+                float ambient = 0.2; // Increased ambient for better base visibility
+                float diffuseIntensity = 1.5 * diffuse; // Maximum directional lighting
+                float specularIntensity = 0.5 * specular; // Strong highlights
+                
+                // Calculate base lighting intensity
+                float baseIntensity = ambient + (diffuseIntensity + specularIntensity) * uLightOn;
+                
+                // For second cube, multiply the final intensity with maximum boost
+                float secondCubeBoost = 1.0 + 1.0 * isSecondCube * uLightOn;
+                
+                // Ensure minimum visibility while maintaining shadow definition
+                vLightIntensity = max(baseIntensity * secondCubeBoost, 0.25);
             }
         `;
 
         // Define fragment shader
         const fragmentShaderSource = `
+            precision highp float;
             varying lowp vec4 vColor;
+            varying float vLightIntensity;
             
             void main() {
-                gl_FragColor = vColor;
+                gl_FragColor = vec4(vColor.rgb * vLightIntensity, vColor.a);
             }
         `;
 
@@ -54,6 +97,8 @@ const WebGLCube = () => {
             uniformLocations: {
                 projectionMatrix: gl.getUniformLocation(shaderProgram, 'uProjectionMatrix'),
                 modelViewMatrix: gl.getUniformLocation(shaderProgram, 'uModelViewMatrix'),
+                lightOn: gl.getUniformLocation(shaderProgram, 'uLightOn'),
+                lightPosition: gl.getUniformLocation(shaderProgram, 'uLightPosition'),
             },
         };
 
@@ -62,7 +107,15 @@ const WebGLCube = () => {
 
         // Mouse event handlers
         const handleMouseDown = (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            const cubeWidth = canvas.width / 2;
+            const clickedCube = x < cubeWidth ? 0 : 1;
+            
             setIsDragging(true);
+            setActiveCube(clickedCube);
             setLastMousePos({
                 x: e.clientX,
                 y: e.clientY
@@ -70,15 +123,23 @@ const WebGLCube = () => {
         };
 
         const handleMouseMove = (e) => {
-            if (!isDragging) return;
+            if (!isDragging || activeCube === null) return;
             
             const deltaX = e.clientX - lastMousePos.x;
             const deltaY = e.clientY - lastMousePos.y;
             
-            setRotation(prev => ({
-                x: prev.x + deltaY * 0.01,
-                y: prev.y + deltaX * 0.01
-            }));
+            // Update rotation speeds based on mouse movement
+            setRotationSpeeds(prev => {
+                const newSpeeds = [...prev];
+                newSpeeds[activeCube] = {
+                    x: deltaY * 0.01,
+                    y: deltaX * 0.01
+                };
+                return newSpeeds;
+            });
+
+            // Update last interaction time
+            lastInteractionTime.current[activeCube] = Date.now();
             
             setLastMousePos({
                 x: e.clientX,
@@ -88,6 +149,7 @@ const WebGLCube = () => {
 
         const handleMouseUp = () => {
             setIsDragging(false);
+            setActiveCube(null);
         };
 
         // Add event listeners
@@ -99,7 +161,15 @@ const WebGLCube = () => {
         // Touch event handlers
         const handleTouchStart = (e) => {
             e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const x = e.touches[0].clientX - rect.left;
+            const y = e.touches[0].clientY - rect.top;
+            
+            const cubeWidth = canvas.width / 2;
+            const clickedCube = x < cubeWidth ? 0 : 1;
+            
             setIsDragging(true);
+            setActiveCube(clickedCube);
             setLastMousePos({
                 x: e.touches[0].clientX,
                 y: e.touches[0].clientY
@@ -108,15 +178,23 @@ const WebGLCube = () => {
 
         const handleTouchMove = (e) => {
             e.preventDefault();
-            if (!isDragging) return;
+            if (!isDragging || activeCube === null) return;
             
             const deltaX = e.touches[0].clientX - lastMousePos.x;
             const deltaY = e.touches[0].clientY - lastMousePos.y;
             
-            setRotation(prev => ({
-                x: prev.x + deltaY * 0.01,
-                y: prev.y + deltaX * 0.01
-            }));
+            // Update rotation speeds based on touch movement
+            setRotationSpeeds(prev => {
+                const newSpeeds = [...prev];
+                newSpeeds[activeCube] = {
+                    x: deltaY * 0.01,
+                    y: deltaX * 0.01
+                };
+                return newSpeeds;
+            });
+
+            // Update last interaction time
+            lastInteractionTime.current[activeCube] = Date.now();
             
             setLastMousePos({
                 x: e.touches[0].clientX,
@@ -126,6 +204,7 @@ const WebGLCube = () => {
 
         const handleTouchEnd = () => {
             setIsDragging(false);
+            setActiveCube(null);
         };
 
         // Add touch event listeners
@@ -133,13 +212,45 @@ const WebGLCube = () => {
         canvas.addEventListener('touchmove', handleTouchMove);
         canvas.addEventListener('touchend', handleTouchEnd);
 
-        let autoRotationAngle = 0;
+        let autoRotationAngles = [0, 0];
         let animationFrameId;
 
         // Render loop
         function render() {
-            autoRotationAngle += 0.01;
-            drawScene(gl, programInfo, buffers, autoRotationAngle);
+            const currentTime = Date.now();
+            
+            // Update rotation speeds and angles for both cubes
+            setCubeRotations(prev => {
+                const newRotations = [...prev];
+                
+                for (let i = 0; i < 2; i++) {
+                    const timeSinceLastInteraction = currentTime - lastInteractionTime.current[i];
+                    
+                    // Gradually decrease speed if no recent interaction
+                    if (timeSinceLastInteraction > 100) { // Start slowing down after 100ms
+                        const decayFactor = Math.exp(-timeSinceLastInteraction / 1000); // Decay over 1 second
+                        setRotationSpeeds(prevSpeeds => {
+                            const newSpeeds = [...prevSpeeds];
+                            newSpeeds[i] = {
+                                x: prevSpeeds[i].x * decayFactor,
+                                y: prevSpeeds[i].y * decayFactor
+                            };
+                            return newSpeeds;
+                        });
+                    }
+                    
+                    // Update rotation based on current speed
+                    newRotations[i] = {
+                        x: prev[i].x + rotationSpeeds[i].x,
+                        y: prev[i].y + rotationSpeeds[i].y
+                    };
+                }
+                
+                return newRotations;
+            });
+
+            autoRotationAngles = autoRotationAngles.map(angle => angle + 0.01);
+            drawScene(gl, programInfo, buffers, autoRotationAngles);
             animationFrameId = requestAnimationFrame(render);
         }
 
@@ -156,7 +267,7 @@ const WebGLCube = () => {
             canvas.removeEventListener('touchend', handleTouchEnd);
             cancelAnimationFrame(animationFrameId);
         };
-    }, [rotation, isDragging, lastMousePos]);
+    }, [rotationSpeeds, isDragging, lastMousePos, activeCube, isLightOn]);
 
     function initShaderProgram(gl, vsSource, fsSource) {
         const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
@@ -195,63 +306,61 @@ const WebGLCube = () => {
 
         const positions = [
             // Front face
-            -1.0, -1.0,  1.0,
-            1.0, -1.0,  1.0,
-            1.0,  1.0,  1.0,
-            -1.0,  1.0,  1.0,
+            -0.5, -0.5,  0.5,
+            0.5, -0.5,  0.5,
+            0.5,  0.5,  0.5,
+            -0.5,  0.5,  0.5,
 
             // Back face
-            -1.0, -1.0, -1.0,
-            -1.0,  1.0, -1.0,
-            1.0,  1.0, -1.0,
-            1.0, -1.0, -1.0,
+            -0.5, -0.5, -0.5,
+            -0.5,  0.5, -0.5,
+            0.5,  0.5, -0.5,
+            0.5, -0.5, -0.5,
 
             // Top face
-            -1.0,  1.0, -1.0,
-            -1.0,  1.0,  1.0,
-            1.0,  1.0,  1.0,
-            1.0,  1.0, -1.0,
+            -0.5,  0.5, -0.5,
+            -0.5,  0.5,  0.5,
+            0.5,  0.5,  0.5,
+            0.5,  0.5, -0.5,
 
             // Bottom face
-            -1.0, -1.0, -1.0,
-            1.0, -1.0, -1.0,
-            1.0, -1.0,  1.0,
-            -1.0, -1.0,  1.0,
+            -0.5, -0.5, -0.5,
+            0.5, -0.5, -0.5,
+            0.5, -0.5,  0.5,
+            -0.5, -0.5,  0.5,
 
             // Right face
-            1.0, -1.0, -1.0,
-            1.0,  1.0, -1.0,
-            1.0,  1.0,  1.0,
-            1.0, -1.0,  1.0,
+            0.5, -0.5, -0.5,
+            0.5,  0.5, -0.5,
+            0.5,  0.5,  0.5,
+            0.5, -0.5,  0.5,
 
             // Left face
-            -1.0, -1.0, -1.0,
-            -1.0, -1.0,  1.0,
-            -1.0,  1.0,  1.0,
-            -1.0,  1.0, -1.0,
+            -0.5, -0.5, -0.5,
+            -0.5, -0.5,  0.5,
+            -0.5,  0.5,  0.5,
+            -0.5,  0.5, -0.5,
         ];
 
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
 
-        const faceColors = [
-            [1.0,  1.0,  1.0,  1.0],    // Front face: white
-            [1.0,  0.0,  0.0,  1.0],    // Back face: red
-            [0.0,  1.0,  0.0,  1.0],    // Top face: green
-            [0.0,  0.0,  1.0,  1.0],    // Bottom face: blue
-            [1.0,  1.0,  0.0,  1.0],    // Right face: yellow
-            [1.0,  0.0,  1.0,  1.0],    // Left face: purple
-        ];
+        let colors1 = [];
+        let colors2 = [];
 
-        let colors = [];
-
-        for (let j = 0; j < faceColors.length; ++j) {
-            const c = faceColors[j];
-            colors = colors.concat(c, c, c, c);
+        for (let j = 0; j < faceColors1.length; ++j) {
+            const c1 = faceColors1[j];
+            const c2 = faceColors2[j];
+            colors1 = colors1.concat(c1, c1, c1, c1);
+            colors2 = colors2.concat(c2, c2, c2, c2);
         }
 
-        const colorBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+        const colorBuffer1 = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer1);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors1), gl.STATIC_DRAW);
+
+        const colorBuffer2 = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer2);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors2), gl.STATIC_DRAW);
 
         const indexBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
@@ -269,12 +378,13 @@ const WebGLCube = () => {
 
         return {
             position: positionBuffer,
-            color: colorBuffer,
+            color1: colorBuffer1,
+            color2: colorBuffer2,
             indices: indexBuffer,
         };
     }
 
-    function drawScene(gl, programInfo, buffers, autoRotationAngle) {
+    function drawScene(gl, programInfo, buffers, autoRotationAngles) {
         gl.clearColor(0.0, 0.0, 0.0, 1.0);
         gl.clearDepth(1.0);
         gl.enable(gl.DEPTH_TEST);
@@ -290,16 +400,41 @@ const WebGLCube = () => {
 
         mat4.perspective(projectionMatrix, fieldOfView, aspect, zNear, zFar);
 
-        const modelViewMatrix = mat4.create();
+        // Use the shader program before setting uniforms
+        gl.useProgram(programInfo.program);
 
-        mat4.translate(modelViewMatrix, modelViewMatrix, [0.0, 0.0, -6.0]);
+        // Set light position and state - adjusted for maximum brightness
+        const lightPosition = [1.5, 1.5, -3.0];
+        gl.uniform3fv(programInfo.uniformLocations.lightPosition, lightPosition);
+        gl.uniform1f(programInfo.uniformLocations.lightOn, isLightOn ? 1.0 : 0.0);
 
-        // Apply user rotation
-        mat4.rotate(modelViewMatrix, modelViewMatrix, rotation.x, [1, 0, 0]);
-        mat4.rotate(modelViewMatrix, modelViewMatrix, rotation.y, [0, 1, 0]);
+        // Set projection matrix
+        gl.uniformMatrix4fv(
+            programInfo.uniformLocations.projectionMatrix,
+            false,
+            projectionMatrix
+        );
 
-        // Apply auto-rotation
-        mat4.rotate(modelViewMatrix, modelViewMatrix, autoRotationAngle, [0, 1, 0]);
+        // Draw first cube
+        const modelViewMatrix1 = mat4.create();
+        mat4.translate(modelViewMatrix1, modelViewMatrix1, [-1.5, 0.0, -6.0]);
+        mat4.rotate(modelViewMatrix1, modelViewMatrix1, cubeRotations[0].x, [1, 0, 0]);
+        mat4.rotate(modelViewMatrix1, modelViewMatrix1, cubeRotations[0].y, [0, 1, 0]);
+        mat4.rotate(modelViewMatrix1, modelViewMatrix1, autoRotationAngles[0], [0, 1, 0]);
+
+        // Set model view matrix for first cube
+        gl.uniformMatrix4fv(
+            programInfo.uniformLocations.modelViewMatrix,
+            false,
+            modelViewMatrix1
+        );
+
+        // Draw second cube
+        const modelViewMatrix2 = mat4.create();
+        mat4.translate(modelViewMatrix2, modelViewMatrix2, [1.5, 0.0, -6.0]);
+        mat4.rotate(modelViewMatrix2, modelViewMatrix2, cubeRotations[1].x, [1, 0, 0]);
+        mat4.rotate(modelViewMatrix2, modelViewMatrix2, cubeRotations[1].y, [0, 1, 0]);
+        mat4.rotate(modelViewMatrix2, modelViewMatrix2, autoRotationAngles[1], [0, 1, 0]);
 
         {
             const numComponents = 3;
@@ -319,13 +454,41 @@ const WebGLCube = () => {
             gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
         }
 
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
+
+        // Draw first cube
         {
             const numComponents = 4;
             const type = gl.FLOAT;
             const normalize = false;
             const stride = 0;
             const offset = 0;
-            gl.bindBuffer(gl.ARRAY_BUFFER, buffers.color);
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffers.color1);
+            gl.vertexAttribPointer(
+                programInfo.attribLocations.vertexColor,
+                numComponents,
+                type,
+                normalize,
+                stride,
+                offset
+            );
+            gl.enableVertexAttribArray(programInfo.attribLocations.vertexColor);
+        }
+        {
+            const vertexCount = 36;
+            const type = gl.UNSIGNED_SHORT;
+            const offset = 0;
+            gl.drawElements(gl.TRIANGLES, vertexCount, type, offset);
+        }
+
+        // Draw second cube
+        {
+            const numComponents = 4;
+            const type = gl.FLOAT;
+            const normalize = false;
+            const stride = 0;
+            const offset = 0;
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffers.color2);
             gl.vertexAttribPointer(
                 programInfo.attribLocations.vertexColor,
                 numComponents,
@@ -337,20 +500,11 @@ const WebGLCube = () => {
             gl.enableVertexAttribArray(programInfo.attribLocations.vertexColor);
         }
 
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
-        gl.useProgram(programInfo.program);
-
-        gl.uniformMatrix4fv(
-            programInfo.uniformLocations.projectionMatrix,
-            false,
-            projectionMatrix
-        );
         gl.uniformMatrix4fv(
             programInfo.uniformLocations.modelViewMatrix,
             false,
-            modelViewMatrix
+            modelViewMatrix2
         );
-
         {
             const vertexCount = 36;
             const type = gl.UNSIGNED_SHORT;
@@ -360,12 +514,46 @@ const WebGLCube = () => {
     }
 
     return (
-        <canvas
-            ref={canvasRef}
-            width={800}
-            height={600}
-            style={{ width: '100%', height: '100%' }}
-        />
+        <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+            <canvas
+                ref={canvasRef}
+                width={800}
+                height={600}
+                style={{ width: '100%', height: '100%' }}
+            />
+            <div style={{
+                position: 'absolute',
+                top: '20px',
+                right: '20px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '10px'
+            }}>
+                <div style={{
+                    width: '40px',
+                    height: '40px',
+                    borderRadius: '50%',
+                    backgroundColor: isLightOn ? '#ffff00' : '#666666',
+                    boxShadow: isLightOn ? '0 0 30px #ffff00, 0 0 50px rgba(255, 255, 0, 0.5)' : 'none',
+                    transition: 'all 0.3s ease'
+                }} />
+                <button
+                    onClick={() => setIsLightOn(!isLightOn)}
+                    style={{
+                        padding: '8px 16px',
+                        backgroundColor: '#333',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '14px'
+                    }}
+                >
+                    {isLightOn ? 'Turn Off' : 'Turn On'}
+                </button>
+            </div>
+        </div>
     );
 };
 
